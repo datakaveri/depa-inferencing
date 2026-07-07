@@ -72,15 +72,15 @@ variable "default_region_config" {
         max_rate_per_instance = null
       }
       backend = {
-        machine_type          = "n2d-standard-2"
+        machine_type          = "c3-standard-4" # iSPIRT/DEPA: Intel C3 for TDX
         min_replicas          = 1
         max_replicas          = 1
         zones                 = null
         max_rate_per_instance = null
-        use_intel_amx         = false
+        use_intel_amx         = true # iSPIRT/DEPA: TDX (GCA issues OIDC for TDX; SEV-SNP unsupported)
       }
       frontend = {
-        machine_type          = "n2d-standard-2"
+        machine_type          = "c3-standard-4" # iSPIRT/DEPA: Intel C3 for TDX
         min_replicas          = 1
         max_replicas          = 1
         zones                 = null
