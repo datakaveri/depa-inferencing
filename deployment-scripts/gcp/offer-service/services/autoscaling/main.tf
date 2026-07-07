@@ -43,7 +43,7 @@ resource "google_compute_instance_template" "frontends" {
     auto_delete = true
     boot        = true
     device_name = "persistent-disk-0"
-    disk_type   = "pd-standard"
+    disk_type   = "pd-balanced" # iSPIRT/DEPA: C3 (TDX) rejects pd-standard
     interface   = "NVME"
     mode        = "READ_WRITE"
     type        = "PERSISTENT"
@@ -67,8 +67,9 @@ resource "google_compute_instance_template" "frontends" {
     enable_vtpm                 = true
   }
   confidential_instance_config {
-    # SEV-SNP (N2D + AMD Milan). Requires min_cpu_platform — see GCP Confidential VM docs.
-    confidential_instance_type  = "SEV_SNP"
+    # iSPIRT/DEPA: Intel TDX. GCA issues OIDC tokens for TDX and plain SEV, but NOT
+    # SEV-SNP (UNSUPPORTED_CC_TECHNOLOGY), so the CS launcher cannot attest on SEV-SNP.
+    confidential_instance_type  = "TDX"
     enable_confidential_compute = true
   }
 
@@ -94,7 +95,7 @@ resource "google_compute_instance_template" "frontends" {
   }
 
   machine_type = var.region_config[each.value.region].frontend.machine_type
-  min_cpu_platform = "AMD Milan"
+  min_cpu_platform = null # iSPIRT/DEPA: C3 (TDX) rejects an explicit min CPU platform
 
   service_account {
     email  = var.service_account_email

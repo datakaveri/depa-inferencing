@@ -58,6 +58,10 @@ resource "google_logging_metric" "crash_log_metric" {
 }
 
 resource "google_monitoring_alert_policy" "alert_policy" {
+  # iSPIRT/DEPA: off by default — its PromQL references workload request metrics
+  # that only exist after real traffic; creating it on a fresh test_mode deploy
+  # fails GCP's PromQL validation. Enable once the servers have served traffic.
+  count        = var.enable_request_failure_alert ? 1 : 0
   display_name = "High Request Failure Rate-${var.environment}"
   combiner     = "OR"
   conditions {
