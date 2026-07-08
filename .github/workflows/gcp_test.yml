@@ -5,6 +5,11 @@ permissions:
 
 on:
   workflow_call:
+    inputs:
+      kms_url:
+        type: string
+        required: false
+        default: ""
 
 jobs:
   test:
@@ -21,6 +26,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Secure invoke test
+        env:
+          KMS_URL: ${{ inputs.kms_url }}
         run: |
           set -euo pipefail
           test -n "${GCP_DOMAIN}" || { echo "::error::Set variable GCP_DOMAIN"; exit 1; }
@@ -35,6 +42,17 @@ jobs:
           echo "## secure_invoke" >> "$GITHUB_STEP_SUMMARY"
           echo "**host_addr:** \`${HOST_ADDR}\`" >> "$GITHUB_STEP_SUMMARY"
 
+          # When KMS URL is provided (test_mode=false), fetch live keys
+          INVOKE_EXTRA_ARGS=""
+          if [ -n "${KMS_URL}" ]; then
+            echo "Fetching live public keys from ${KMS_URL}/app/listpubkeys ..."
+            LIVE_KEYS=$(curl -sf "${KMS_URL}/app/listpubkeys")
+            PUBLIC_KEY=$(echo "$LIVE_KEYS" | jq -r '.keys[0].key')
+            KEY_ID=$(echo "$LIVE_KEYS" | jq -r '.keys[0].id')
+            echo "**KMS key_id:** \`${KEY_ID}\`" >> "$GITHUB_STEP_SUMMARY"
+            INVOKE_EXTRA_ARGS="--public_key=${PUBLIC_KEY} --key_id=${KEY_ID}"
+          fi
+
           run_container() {
             docker run --rm \
               -v "${GITHUB_WORKSPACE}/tools/requests/get_bids_request1.json:/data/get_bids_request.json:ro" \
@@ -46,7 +64,8 @@ jobs:
               --host_addr="${HOST_ADDR}" \
               --client_type=CLIENT_TYPE_BROWSER \
               --insecure=false \
-              --client_ip=192.168.1.1
+              --client_ip=192.168.1.1 \
+              ${INVOKE_EXTRA_ARGS}
           }
 
           if [ -n "${SECURE_INVOKE_IMAGE:-}" ]; then
@@ -70,9 +89,3 @@ jobs:
 
           echo "::error::Set repository variable SECURE_INVOKE_IMAGE (e.g. ispirt.azurecr.io/depainferencing/gcp/secure_invoke:4.10.0)"
           exit 1
-
-          # echo "No SECURE_INVOKE_IMAGE — one-shot cbuild (slow)." >> "$GITHUB_STEP_SUMMARY"
-          # chmod +x ./builders/tools/cbuild
-          # exec ./builders/tools/cbuild \
-          #   --image build-debian \
-          #   --cmd "bazel run //tools/secure_invoke:invoke -- --op=invoke --target_service=BFE --input_file=/src/workspace/get_bids_request.json --host_addr=${HOST_ADDR} --client_type=CLIENT_TYPE_BROWSER --insecure=false --client_ip=192.168.1.1"

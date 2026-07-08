@@ -151,6 +151,12 @@ variable "test_mode" {
   default     = "true"
 }
 
+variable "public_key_endpoint" {
+  description = "KMS public key endpoint URL. Overrides the default Privacy Sandbox endpoint when a custom KMS is used."
+  type        = string
+  default     = "https://publickeyservice.pa.gcp.privacysandboxservices.com/.well-known/protected-auction/v1/public-keys"
+}
+
 variable "buyer_code_bucket" {
   description = "GCS bucket name for protected auction bidding JS (BUYER_CODE_FETCH_CONFIG)."
   type        = string

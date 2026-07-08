@@ -27,6 +27,10 @@ on:
         description: "Run in Test mode? hardcoded keys, no KMS"
         type: boolean
         default: true
+      kms_url:
+        description: "KMS base URL (required when test_mode=false, e.g. https://your-kms.example.com)"
+        type: string
+        default: ""
   # pull_request:
   #   branches: [main]
 
@@ -41,12 +45,15 @@ jobs:
       image_repo: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_repo || 'ispirt.azurecr.io/depainferencing/gcp' }}
       image_tag: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || 'nonprod-4.10.0' }}
       test_mode: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.test_mode == 'true' }}
+      kms_url: ${{ github.event.inputs.kms_url || '' }}
 
   test:
     name: Test (GCP)
     needs: deploy
     uses: ./.github/workflows/gcp_test.yml
     secrets: inherit
+    with:
+      kms_url: ${{ github.event.inputs.kms_url || '' }}
 
   cleanup:
     name: Cleanup (GCP)
@@ -58,3 +65,4 @@ jobs:
       image_repo: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_repo || 'ispirt.azurecr.io/depainferencing/gcp' }}
       image_tag: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag || 'nonprod-4.10.0' }}
       test_mode: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.test_mode == 'true' }}
+      kms_url: ${{ github.event.inputs.kms_url || '' }}

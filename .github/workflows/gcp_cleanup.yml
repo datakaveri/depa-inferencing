@@ -16,6 +16,10 @@ on:
       test_mode:
         type: boolean
         required: true
+      kms_url:
+        type: string
+        required: false
+        default: ""
 
 jobs:
   cleanup:
@@ -50,6 +54,7 @@ jobs:
           IMAGE_REPO: ${{ inputs.image_repo }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           TEST_MODE_INPUT: ${{ inputs.test_mode }}
+          KMS_URL: ${{ inputs.kms_url }}
         run: |
           set -euo pipefail
           TFVARS_FILE="${GITHUB_WORKSPACE}/${BUYER_DIR}/terraform.tfvars"
@@ -61,6 +66,7 @@ jobs:
           sed -i '/^[[:space:]]*test_mode[[:space:]]*=/d' "$TFVARS_FILE" || true
           sed -i '/^[[:space:]]*environment[[:space:]]*=/d' "$TFVARS_FILE" || true
           sed -i '/^[[:space:]]*buyer_operator[[:space:]]*=/d' "$TFVARS_FILE" || true
+          sed -i '/^[[:space:]]*public_key_endpoint[[:space:]]*=/d' "$TFVARS_FILE" || true
           {
             echo "image_repo = \"${IMAGE_REPO}\""
             echo "image_tag = \"${IMAGE_TAG}\""
@@ -68,6 +74,9 @@ jobs:
             echo "environment = \"ci\""
             echo "buyer_operator = \"ispirt\""
           } >> "$TFVARS_FILE"
+          if [ -n "${KMS_URL}" ]; then
+            echo "public_key_endpoint = \"${KMS_URL}/app/listpubkeys\"" >> "$TFVARS_FILE"
+          fi
 
       - name: Terraform destroy
         working-directory: ${{ env.BUYER_DIR }}
