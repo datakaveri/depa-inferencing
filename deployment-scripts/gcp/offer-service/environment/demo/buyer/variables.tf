@@ -157,6 +157,24 @@ variable "public_key_endpoint" {
   default     = "https://publickeyservice.pa.gcp.privacysandboxservices.com/.well-known/protected-auction/v1/public-keys"
 }
 
+variable "primary_coordinator_private_key_endpoint" {
+  description = "Private key vending endpoint (iSPIRT KMS /app/key). Overrides the default Privacy Sandbox coordinator when a custom KMS is used."
+  type        = string
+  default     = "https://privatekeyservice-a.pa-3.gcp.privacysandboxservices.com/v1alpha/encryptionKeys"
+}
+
+variable "secondary_coordinator_private_key_endpoint" {
+  description = "Secondary private key vending endpoint (iSPIRT KMS /app/key). Overrides the default Privacy Sandbox coordinator when a custom KMS is used."
+  type        = string
+  default     = "https://privatekeyservice-b.pa-4.gcp.privacysandboxservices.com/v1alpha/encryptionKeys"
+}
+
+variable "kms_unwrap_url" {
+  description = "iSPIRT KMS /app/unwrapKey URL. Injected into the TEE container env as KMS_UNWRAP_URL (read via getenv by the GCP unwrap KMS client). Empty when using the default coordinator."
+  type        = string
+  default     = ""
+}
+
 variable "buyer_code_bucket" {
   description = "GCS bucket name for protected auction bidding JS (BUYER_CODE_FETCH_CONFIG)."
   type        = string

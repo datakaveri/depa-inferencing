@@ -175,3 +175,9 @@ variable "enable_tee_container_log_redirect" {
   type        = bool
   default     = true
 }
+
+variable "kms_unwrap_url" {
+  description = "iSPIRT KMS /app/unwrapKey URL. When non-empty, injected into the TEE container env as KMS_UNWRAP_URL via a tee-env- instance metadata key."
+  type        = string
+  default     = ""
+}

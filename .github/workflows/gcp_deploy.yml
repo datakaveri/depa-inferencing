@@ -125,6 +125,9 @@ jobs:
           sed -i '/^[[:space:]]*environment[[:space:]]*=/d' "$TFVARS_FILE" || true
           sed -i '/^[[:space:]]*buyer_operator[[:space:]]*=/d' "$TFVARS_FILE" || true
           sed -i '/^[[:space:]]*public_key_endpoint[[:space:]]*=/d' "$TFVARS_FILE" || true
+          sed -i '/^[[:space:]]*primary_coordinator_private_key_endpoint[[:space:]]*=/d' "$TFVARS_FILE" || true
+          sed -i '/^[[:space:]]*secondary_coordinator_private_key_endpoint[[:space:]]*=/d' "$TFVARS_FILE" || true
+          sed -i '/^[[:space:]]*kms_unwrap_url[[:space:]]*=/d' "$TFVARS_FILE" || true
           {
             echo "image_repo = \"${IMAGE_REPO}\""
             echo "image_tag = \"${IMAGE_TAG}\""
@@ -133,7 +136,13 @@ jobs:
             echo "buyer_operator = \"ispirt\""
           } >> "$TFVARS_FILE"
           if [ -n "${KMS_URL}" ]; then
+            # Point every key endpoint at the iSPIRT KMS. public + private go
+            # through the config client (runtime flags); unwrap is a raw container
+            # env var (KMS_UNWRAP_URL) injected via tee-env- instance metadata.
             echo "public_key_endpoint = \"${KMS_URL}/app/listpubkeys\"" >> "$TFVARS_FILE"
+            echo "primary_coordinator_private_key_endpoint = \"${KMS_URL}/app/key?fmt=tink\"" >> "$TFVARS_FILE"
+            echo "secondary_coordinator_private_key_endpoint = \"${KMS_URL}/app/key?fmt=tink\"" >> "$TFVARS_FILE"
+            echo "kms_unwrap_url = \"${KMS_URL}/app/unwrapKey?fmt=tink\"" >> "$TFVARS_FILE"
           fi
 
       - name: Deploy buyer stack

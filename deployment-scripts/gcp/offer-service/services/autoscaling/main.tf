@@ -94,14 +94,14 @@ resource "google_compute_instance_template" "frontends" {
     # }
   }
 
-  machine_type = var.region_config[each.value.region].frontend.machine_type
+  machine_type     = var.region_config[each.value.region].frontend.machine_type
   min_cpu_platform = null # iSPIRT/DEPA: C3 (TDX) rejects an explicit min CPU platform
 
   service_account {
     email  = var.service_account_email
     scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
-  metadata = {
+  metadata = merge({
     tee-image-reference              = var.frontend_tee_image
     tee-container-log-redirect       = var.enable_tee_container_log_redirect
     tee-impersonate-service-accounts = var.tee_impersonate_service_accounts
@@ -109,7 +109,9 @@ resource "google_compute_instance_template" "frontends" {
     environment                      = var.environment
     operator                         = var.operator
     service                          = var.frontend_service_name
-  }
+    }, var.kms_unwrap_url != "" ? {
+    tee-env-KMS_UNWRAP_URL = var.kms_unwrap_url
+  } : {})
 
   lifecycle {
     create_before_destroy = true
@@ -259,7 +261,7 @@ resource "google_compute_instance_template" "backends" {
     # }
   }
 
-  machine_type = var.region_config[each.value.region].backend.machine_type
+  machine_type     = var.region_config[each.value.region].backend.machine_type
   min_cpu_platform = var.region_config[each.value.region].backend.use_intel_amx ? null : "AMD Milan"
 
   service_account {
@@ -275,7 +277,9 @@ resource "google_compute_instance_template" "backends" {
     tee-container-log-redirect       = var.enable_tee_container_log_redirect
     tee-impersonate-service-accounts = var.tee_impersonate_service_accounts
     operator                         = var.operator
-  })
+    }, var.kms_unwrap_url != "" ? {
+    tee-env-KMS_UNWRAP_URL = var.kms_unwrap_url
+  } : {})
 
   lifecycle {
     create_before_destroy = true

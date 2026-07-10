@@ -51,6 +51,7 @@ module "autoscaling" {
   frontend_service_port                 = tonumber(var.runtime_flags["BUYER_FRONTEND_PORT"])
   frontend_service_healthcheck_port     = tonumber(var.runtime_flags["BUYER_FRONTEND_HEALTHCHECK_PORT"])
   frontend_service_name                 = "bfe"
+  kms_unwrap_url                        = var.kms_unwrap_url
   collector_service_name                = "collector"
   collector_service_port                = var.collector_service_port
   region_config                         = var.region_config

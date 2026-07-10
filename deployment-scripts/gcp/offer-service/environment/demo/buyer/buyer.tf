@@ -65,6 +65,7 @@ module "buyer" {
   gcp_project_id       = var.gcp_project_id
   bidding_image        = "${var.image_repo}/bidding_service:${each.value.image_tag}"
   buyer_frontend_image = "${var.image_repo}/buyer_frontend_service:${each.value.image_tag}"
+  kms_unwrap_url       = var.kms_unwrap_url
 
   runtime_flags = merge({
     BIDDING_PORT                      = "50051"          # Do not change unless you are modifying the default GCP architecture.
@@ -120,8 +121,8 @@ module "buyer" {
     # Coordinator/KMS flags — If TEST_MODE=true then these are not actually used,
     # but they must be present for the config client.
     PUBLIC_KEY_ENDPOINT                           = var.public_key_endpoint
-    PRIMARY_COORDINATOR_PRIVATE_KEY_ENDPOINT      = "https://privatekeyservice-a.pa-3.gcp.privacysandboxservices.com/v1alpha/encryptionKeys"
-    SECONDARY_COORDINATOR_PRIVATE_KEY_ENDPOINT    = "https://privatekeyservice-b.pa-4.gcp.privacysandboxservices.com/v1alpha/encryptionKeys"
+    PRIMARY_COORDINATOR_PRIVATE_KEY_ENDPOINT      = var.primary_coordinator_private_key_endpoint
+    SECONDARY_COORDINATOR_PRIVATE_KEY_ENDPOINT    = var.secondary_coordinator_private_key_endpoint
     PRIMARY_COORDINATOR_ACCOUNT_IDENTITY          = "a-opverifiedusr@ps-pa-coord-prd-g3p-wif.iam.gserviceaccount.com"
     SECONDARY_COORDINATOR_ACCOUNT_IDENTITY        = "b-opverifiedusr@ps-prod-pa-type2-fe82.iam.gserviceaccount.com"
     PRIMARY_COORDINATOR_REGION                    = "us-central1"

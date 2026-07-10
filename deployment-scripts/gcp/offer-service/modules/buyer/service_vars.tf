@@ -147,3 +147,9 @@ variable "gcp_dns_zones_project_id" {
   type        = string
   default     = null
 }
+
+variable "kms_unwrap_url" {
+  description = "iSPIRT KMS /app/unwrapKey URL, injected into the TEE container env as KMS_UNWRAP_URL. Empty when using the default coordinator."
+  type        = string
+  default     = ""
+}
