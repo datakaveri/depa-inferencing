@@ -7,14 +7,6 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      cloud_provider:
-        description: 'Cloud whose key release policy to update (azure = SNP hostdata via confcom; gcp = Confidential Space service account)'
-        required: true
-        type: choice
-        default: azure
-        options:
-          - azure
-          - gcp
       kms_target_environment:
         description: 'KMS: UAT or Prod deployment environment'
         required: true
@@ -24,17 +16,13 @@ on:
           - uat
           - prod
       key_release_policy_operation:
-        description: 'Add or remove entries from the key release policy (hostdata for azure, service accounts for gcp)'
+        description: 'Add or remove CCE policy hashes from the key release policy'
         required: true
         type: choice
         default: add
         options:
           - add
           - remove
-      gcp_workload_jwt:
-        description: 'GCP only: a SAMPLE Confidential Space OIDC token. Its Google signature is verified, then google_service_accounts is extracted and allowlisted. Ignored when cloud_provider = azure.'
-        required: false
-        type: string
       bidding-auction-version:
         description: 'Release Version for Bidding and Auction Services'
         required: true
@@ -63,7 +51,6 @@ jobs:
           subscription-id: ${{ secrets.AZURE_AKS_SUBSCRIPTION_ID }}
       
       - name: Setup Build Environment
-        if: ${{ inputs.cloud_provider != 'gcp' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake git
@@ -87,7 +74,6 @@ jobs:
           sudo usermod -aG docker $USER
 
       - name: Install Azure CLI & Confcom extension
-        if: ${{ inputs.cloud_provider != 'gcp' }}
         run: |
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
           az version
@@ -110,7 +96,6 @@ jobs:
           echo "ccf_env/bin" >> $GITHUB_PATH
 
       - name: Generate CCE policies for services
-        if: ${{ inputs.cloud_provider != 'gcp' }}
         env:
           REGISTRY: ${{ vars.REGISTRY }}
           REPO_PATH: ${{ vars.REPO_PATH }}
@@ -189,8 +174,7 @@ jobs:
           rm -rf "$TMP_DIR"
 
       - name: Generate key release policy JSON
-        if: ${{ inputs.cloud_provider != 'gcp' }}
-        env:
+        env: 
           KMS_TARGET: ${{ github.event.inputs.kms_target_environment }}
           POLICY_OPERATION: ${{ github.event.inputs.key_release_policy_operation }}
           KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
@@ -303,7 +287,7 @@ jobs:
           cat "$GITHUB_WORKSPACE/key_release_policy.json"
     
       - name: Sign and submit key release policy proposal
-        if: ${{ inputs.cloud_provider != 'gcp' && env.SUBMIT_PROPOSAL == 'true' }}
+        if: env.SUBMIT_PROPOSAL == 'true'
         env:
           AZURE_VAULT_NAME: ${{ vars.KMS_SIGNING_KV }}
           KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
@@ -316,7 +300,6 @@ jobs:
           ./tools/signing/sign.sh
 
       - name: Display current key release policy
-        if: ${{ inputs.cloud_provider != 'gcp' }}
         env:
           KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
         run: |
@@ -325,98 +308,3 @@ jobs:
           TOKEN=$(az account get-access-token --resource https://confidential-ledger.azure.com | jq -r '.accessToken')
           # -k: quick post-submit display; sign.sh does full TLS verify to governance
           curl -sS -k "$GOV_BASE/app/keyReleasePolicy" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" | jq
-
-      # =====================================================================
-      # GCP Confidential Space workload registration (Gate 2 authorization).
-      #
-      # No confcom / ACI policy generation: unlike Azure SNP, a GCP workload's
-      # identity (service account today; image_digest later) is carried inside
-      # the Google-signed Confidential Space OIDC token. We verify that token,
-      # extract the identity, and submit a `set_gcp_key_release_policy` proposal
-      # signed by the SAME member key as the Azure path (the member signature is
-      # the trust anchor; the JWT signature check is operator-side assurance the
-      # service account belongs to a real Confidential Space workload).
-      #
-      # This whole block is strictly ADDITIVE: new allowlisted claims (e.g.
-      # image_digest) slot into the proposal's `claims` object below with one
-      # extra line and require no change to the operator flow or the extractor
-      # script (which already surfaces image_digest).
-      # =====================================================================
-      - name: Verify Confidential Space JWT and extract workload identity
-        if: ${{ inputs.cloud_provider == 'gcp' }}
-        env:
-          GCP_WORKLOAD_JWT: ${{ inputs.gcp_workload_jwt }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GCP_WORKLOAD_JWT}" ]; then
-            echo "ERROR: gcp_workload_jwt is required when cloud_provider = gcp"
-            exit 1
-          fi
-          # Keep the raw token out of the logs.
-          echo "::add-mask::${GCP_WORKLOAD_JWT}"
-          source ccf_env/bin/activate
-          pip install --quiet pyjwt cryptography
-          # Verifies Google's signature + issuer + swname, then prints a JSON
-          # object of the verified workload identity. Fails the job (so nothing
-          # is proposed) if the token is forged, not a Confidential Space token,
-          # or carries no service account.
-          IDENTITY=$(python tools/signing/gcp_extract_workload_identity.py "${GCP_WORKLOAD_JWT}")
-          echo "Verified workload identity: ${IDENTITY}"
-          SERVICE_ACCOUNTS=$(echo "${IDENTITY}" | jq -c '.service_accounts')
-          echo "Service account(s) to ${{ inputs.key_release_policy_operation }}: ${SERVICE_ACCOUNTS}"
-          echo "SERVICE_ACCOUNTS=${SERVICE_ACCOUNTS}" >> $GITHUB_ENV
-
-      - name: Generate GCP key release policy proposal
-        if: ${{ inputs.cloud_provider == 'gcp' }}
-        env:
-          POLICY_OPERATION: ${{ github.event.inputs.key_release_policy_operation }}
-          SERVICE_ACCOUNTS: ${{ env.SERVICE_ACCOUNTS }}
-        run: |
-          set -euo pipefail
-          # ADD FUTURE CLAIMS HERE: the claims object starts with
-          # google_service_accounts; to pin images later, append
-          # `+ {"image_digest": [$digest]}` (extracted by the script above) --
-          # nothing else in this workflow needs to change.
-          CLAIMS=$(jq -n --argjson sas "${SERVICE_ACCOUNTS}" \
-            '{ "google_service_accounts": $sas }')
-
-          jq -n \
-            --arg type "${POLICY_OPERATION}" \
-            --argjson claims "${CLAIMS}" \
-            '{
-              actions: [{
-                name: "set_gcp_key_release_policy",
-                args: {
-                  type: $type,
-                  claims: $claims
-                }
-              }]
-            }' > "${GITHUB_WORKSPACE}/gcp_key_release_policy.json"
-
-          echo "Generated GCP proposal:"
-          cat "${GITHUB_WORKSPACE}/gcp_key_release_policy.json" | jq .
-
-      - name: Sign and submit GCP key release policy proposal
-        if: ${{ inputs.cloud_provider == 'gcp' }}
-        env:
-          AZURE_VAULT_NAME: ${{ vars.KMS_SIGNING_KV }}
-          KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
-          PROPOSAL: ${{ github.workspace }}/gcp_key_release_policy.json
-        run: |
-          # sign.sh is action-agnostic: it COSE-signs whatever PROPOSAL points
-          # at with the member cert from Key Vault and POSTs it to governance.
-          source ccf_env/bin/activate
-          ./tools/signing/sign.sh
-
-      - name: Display current GCP key release policy
-        if: ${{ inputs.cloud_provider == 'gcp' }}
-        env:
-          KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
-        run: |
-          GOV_BASE="https://${KMS_DEPLOYMENT_NAME}.confidential-ledger.azure.com"
-          GOV_BASE="${GOV_BASE%/}"
-          TOKEN=$(az account get-access-token --resource https://confidential-ledger.azure.com | jq -r '.accessToken')
-          # The GCP allowlist lives in a separate map, surfaced via the
-          # attestationType selector on the app's keyReleasePolicy endpoint.
-          curl -sS -k "$GOV_BASE/app/keyReleasePolicy?attestationType=gcp" \
-            -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" | jq
