@@ -7,8 +7,16 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      cloud:
+        description: 'Target cloud: azure (confcom hostdata) or gcp (Confidential Space container_measurement)'
+        required: true
+        type: choice
+        default: azure
+        options:
+          - azure
+          - gcp
       kms_target_environment:
-        description: 'KMS: UAT or Prod deployment environment'
+        description: 'KMS: UAT or Prod deployment environment (azure path only)'
         required: true
         type: choice
         default: uat
@@ -33,17 +41,37 @@ on:
         required: true
         type: string
         default: '1.2.1.2'
+      gcp_image_refs:
+        description: 'GCP path: full image references, ONE PER LINE (Confidential Space images to allowlist)'
+        required: false
+        type: string
+        default: |
+          us-central1-docker.pkg.dev/p3dx-depa-sandbox/bidding-auction/bidding_service:kms-e2e-nonprod-v2
+      gcp_dbgstat:
+        description: 'GCP path: dbgstat value to pin (prod: disabled-since-boot; nonprod: enabled; empty = do not pin)'
+        required: false
+        type: string
+        default: ''
+      gcp_pin_secboot:
+        description: 'GCP path: also require secboot=true'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   update-kms-policy:
-    environment: ${{ github.event.inputs.kms_target_environment == 'uat' && 'azure-uat' || 'azure-prod' }}
-    # Runner labels: self-hosted + uat | prod (must reach private KV + confidential ledger)
-    runs-on: ${{ fromJSON(github.event.inputs.kms_target_environment == 'uat' && '["self-hosted", "uat"]' || '["self-hosted", "prod"]') }}
+    # azure -> azure-uat/azure-prod (private KV + AKV signing). gcp -> gcp-dev
+    # (local member-cert signing, no KV/AKV needed).
+    environment: ${{ github.event.inputs.cloud == 'gcp' && 'gcp-dev' || (github.event.inputs.kms_target_environment == 'uat' && 'azure-uat' || 'azure-prod') }}
+    # azure: self-hosted + uat|prod (must reach private KV + confidential ledger).
+    # gcp:   self-hosted + gcp (local signing; only the public ledger endpoint).
+    runs-on: ${{ fromJSON(github.event.inputs.cloud == 'gcp' && '["self-hosted", "gcp"]' || (github.event.inputs.kms_target_environment == 'uat' && '["self-hosted", "uat"]' || '["self-hosted", "prod"]')) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Azure Login
+        if: ${{ inputs.cloud != 'gcp' }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_AKS_CLIENT_ID }}
@@ -51,6 +79,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_AKS_SUBSCRIPTION_ID }}
       
       - name: Setup Build Environment
+        if: ${{ inputs.cloud != 'gcp' }}
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake git
@@ -74,6 +103,7 @@ jobs:
           sudo usermod -aG docker $USER
 
       - name: Install Azure CLI & Confcom extension
+        if: ${{ inputs.cloud != 'gcp' }}
         run: |
           curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
           az version
@@ -96,6 +126,7 @@ jobs:
           echo "ccf_env/bin" >> $GITHUB_PATH
 
       - name: Generate CCE policies for services
+        if: ${{ inputs.cloud != 'gcp' }}
         env:
           REGISTRY: ${{ vars.REGISTRY }}
           REPO_PATH: ${{ vars.REPO_PATH }}
@@ -174,7 +205,8 @@ jobs:
           rm -rf "$TMP_DIR"
 
       - name: Generate key release policy JSON
-        env: 
+        if: ${{ inputs.cloud != 'gcp' }}
+        env:
           KMS_TARGET: ${{ github.event.inputs.kms_target_environment }}
           POLICY_OPERATION: ${{ github.event.inputs.key_release_policy_operation }}
           KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
@@ -287,7 +319,7 @@ jobs:
           cat "$GITHUB_WORKSPACE/key_release_policy.json"
     
       - name: Sign and submit key release policy proposal
-        if: env.SUBMIT_PROPOSAL == 'true'
+        if: ${{ inputs.cloud != 'gcp' && env.SUBMIT_PROPOSAL == 'true' }}
         env:
           AZURE_VAULT_NAME: ${{ vars.KMS_SIGNING_KV }}
           KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
@@ -300,6 +332,7 @@ jobs:
           ./tools/signing/sign.sh
 
       - name: Display current key release policy
+        if: ${{ inputs.cloud != 'gcp' }}
         env:
           KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
         run: |
@@ -308,3 +341,116 @@ jobs:
           TOKEN=$(az account get-access-token --resource https://confidential-ledger.azure.com | jq -r '.accessToken')
           # -k: quick post-submit display; sign.sh does full TLS verify to governance
           curl -sS -k "$GOV_BASE/app/keyReleasePolicy" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" | jq
+
+      # ======================================================================
+      # GCP path (Confidential Space). No Azure login, no confcom, no Key Vault:
+      # the measurement is derived from image metadata and the proposal is signed
+      # LOCALLY with the on-disk member cert (vars.KMS_KEYS_DIR), then submitted
+      # to the public GCP KMS ledger. Mirrors the Azure hostdata flow above but
+      # registers `container_measurement` (+ optional dbgstat/secboot posture).
+      # ======================================================================
+      - name: GCP - compute container measurements and build proposal
+        if: ${{ inputs.cloud == 'gcp' }}
+        env:
+          IMAGE_REFS: ${{ inputs.gcp_image_refs }}
+          POLICY_OPERATION: ${{ inputs.key_release_policy_operation }}
+          GCP_DBGSTAT: ${{ inputs.gcp_dbgstat }}
+          PIN_SECBOOT: ${{ inputs.gcp_pin_secboot }}
+          KMS_DEPLOYMENT_NAME: ${{ vars.KMS_CONFIDENTIAL_LEDGER }}
+        run: |
+          set -euo pipefail
+
+          # The GCP KMS ledger endpoint is public (Confidential Space calls it);
+          # the ledger presents its own CCF cert, fetched from the public identity
+          # endpoint and used as the CA for governance calls.
+          KMS_URL="https://${KMS_DEPLOYMENT_NAME}.confidential-ledger.azure.com"
+          SVC="${GITHUB_WORKSPACE}/gcp_service_cert.pem"
+          curl -sS "https://identity.confidential-ledger.core.azure.com/ledgerIdentity/${KMS_DEPLOYMENT_NAME}" \
+            | jq -r '.ledgerTlsCertificate' > "$SVC"
+          echo "KMS_URL=$KMS_URL" >> $GITHUB_ENV
+          echo "KMS_SERVICE_CERT_PATH=$SVC" >> $GITHUB_ENV
+
+          # Drift guard: fail fast if the vendored canonicaliser no longer matches
+          # the golden value the KMS is locked to.
+          node tools/gcp/gcp_container_measurement.mjs --self-test
+
+          # One measurement per image ref, derived purely from image metadata
+          # (no full pull): image_digest = manifest digest, image_id = config
+          # digest, args = Entrypoint + Cmd, restart_policy = Never.
+          MEASUREMENTS=()
+          while IFS= read -r RAW; do
+            REF="$(echo "$RAW" | xargs)"
+            [ -z "$REF" ] && continue
+            echo "::group::$REF"
+            IMAGE_DIGEST=$(docker buildx imagetools inspect "$REF" --format '{{.Manifest.Digest}}')
+            IMAGE_ID=$(docker manifest inspect "$REF" | jq -r '.config.digest')
+            ARGS=$(docker buildx imagetools inspect "$REF" --format '{{json .Image}}' \
+              | jq -c '(.config // (to_entries[0].value.config)) as $c | (($c.Entrypoint // []) + ($c.Cmd // []))')
+            echo "  image_digest=$IMAGE_DIGEST"
+            echo "  image_id=$IMAGE_ID"
+            echo "  args=$ARGS"
+            M=$(node tools/gcp/gcp_container_measurement.mjs \
+                  --image-digest "$IMAGE_DIGEST" --image-id "$IMAGE_ID" \
+                  --restart-policy Never --args "$ARGS")
+            echo "  container_measurement=$M"
+            MEASUREMENTS+=("$M")
+            echo "::endgroup::"
+          done <<< "$IMAGE_REFS"
+
+          if [ "${#MEASUREMENTS[@]}" -eq 0 ]; then
+            echo "No image refs provided in gcp_image_refs; nothing to do."
+            echo "SUBMIT_PROPOSAL=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # Build the claims object. container_measurement is an allowlist; the
+          # set_gcp_key_release_policy action dedupes on add and filters on remove.
+          # dbgstat/secboot posture claims are only pinned when requested.
+          CLAIMS=$(printf '%s\n' "${MEASUREMENTS[@]}" | jq -R . | jq -s '{container_measurement: .}')
+          if [ -n "$GCP_DBGSTAT" ]; then
+            CLAIMS=$(echo "$CLAIMS" | jq --arg d "$GCP_DBGSTAT" '. + {dbgstat: [$d]}')
+          fi
+          if [ "$PIN_SECBOOT" = "true" ]; then
+            CLAIMS=$(echo "$CLAIMS" | jq '. + {secboot: ["true"]}')
+          fi
+
+          jq -n --arg op "$POLICY_OPERATION" --argjson claims "$CLAIMS" \
+            '{ actions: [ { name: "set_gcp_key_release_policy",
+                            args: { type: $op, claims: $claims } } ] }' \
+            > "${GITHUB_WORKSPACE}/gcp_key_release_policy.json"
+
+          echo "SUBMIT_PROPOSAL=true" >> $GITHUB_ENV
+          echo "Generated GCP key release policy proposal ($POLICY_OPERATION):"
+          jq . "${GITHUB_WORKSPACE}/gcp_key_release_policy.json"
+
+      - name: GCP - sign locally and submit proposal
+        if: ${{ inputs.cloud == 'gcp' && env.SUBMIT_PROPOSAL == 'true' }}
+        env:
+          KMS_URL: ${{ env.KMS_URL }}
+          KMS_SERVICE_CERT_PATH: ${{ env.KMS_SERVICE_CERT_PATH }}
+          KEYS_DIR: ${{ vars.KMS_KEYS_DIR }}
+        run: |
+          set -euo pipefail
+          source ccf_env/bin/activate
+          # Local (USE_AKV=false) COSE signing with the on-disk member cert - the
+          # dev KMS Key Vault is private, so AKV remote signing is not reachable.
+          ccf_cose_sign1 \
+            --content "${GITHUB_WORKSPACE}/gcp_key_release_policy.json" \
+            --signing-cert "${KEYS_DIR}/member0_cert.pem" \
+            --signing-key "${KEYS_DIR}/member0_privk.pem" \
+            --ccf-gov-msg-type proposal \
+            --ccf-gov-msg-created_at "$(date -Is)" \
+          | curl -sS --cacert "${KMS_SERVICE_CERT_PATH}" \
+              -X POST -H "Content-Type: application/cose" \
+              --data-binary @- \
+              "${KMS_URL}/app/proposals" -w '\nHTTP %{http_code}\n'
+
+      - name: GCP - display key release policy
+        if: ${{ inputs.cloud == 'gcp' }}
+        env:
+          KMS_URL: ${{ env.KMS_URL }}
+          KMS_SERVICE_CERT_PATH: ${{ env.KMS_SERVICE_CERT_PATH }}
+        run: |
+          echo "=== GCP key release policy (Gate 2) ==="
+          curl -sS --cacert "${KMS_SERVICE_CERT_PATH}" \
+            "${KMS_URL}/app/keyReleasePolicy?attestationType=gcp" | jq
